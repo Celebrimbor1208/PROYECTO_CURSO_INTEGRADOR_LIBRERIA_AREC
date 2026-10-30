@@ -1,0 +1,10 @@
+# NetBeans / Ant
+build/
+dist/
+nbproject/private/
+# Logs generados por Logback
+logs/
+# Sistema
+*.class
+.DS_Store
+Thumbs.db
