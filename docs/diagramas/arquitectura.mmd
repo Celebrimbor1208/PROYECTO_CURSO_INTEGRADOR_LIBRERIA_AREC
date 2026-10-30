@@ -1,0 +1,44 @@
+flowchart TB
+  subgraph V["VISTA (Swing)"]
+    PL[PanelLogin] --- PM[PanelMenu]
+    PV[PanelVenta] --- PI[PanelInventario] --- PU[PanelUsuarios]
+  end
+  subgraph C["CONTROLADOR"]
+    AC[AutenticacionController]
+    VC[VentaController]
+    IC[InventarioController]
+    UC[UsuarioController]
+    SE[Sesion]
+    VA[Validador / ValidacionException]
+  end
+  subgraph M["MODELO"]
+    L[Libro / RegistroLibro]
+    E[Empleado / Cargos]
+    VE[Venta]
+  end
+  subgraph D["DAO (interfaces)"]
+    LD[LibroDAO]
+    ED[EmpleadoDAO]
+    VD[VentaDAO]
+  end
+  subgraph MEM["Implementación en memoria"]
+    LM[LibroDAOMemoria]
+    EM[EmpleadoDAOMemoria]
+    VM[VentaDAOMemoria]
+  end
+  PL --> AC
+  PV --> VC
+  PI --> IC
+  PU --> UC
+  AC & VC & IC & UC --> VA
+  AC --> ED
+  VC --> LD & VD
+  IC --> LD
+  UC --> ED
+  LD -.implementa.-> LM
+  ED -.implementa.-> EM
+  VD -.implementa.-> VM
+  C --> M
+  D --> M
+  VP[VentanaPrincipal<br/>raíz de composición] -. inyecta .-> C
+  VP -. crea .-> MEM

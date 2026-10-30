@@ -1,0 +1,9 @@
+libreriaarec
+libreriaarec.controlador
+libreriaarec.dao
+libreriaarec.dao.memoria
+libreriaarec.inventario
+libreriaarec.modelo
+libreriaarec.usuarios
+libreriaarec.util
+libreriaarec.venta

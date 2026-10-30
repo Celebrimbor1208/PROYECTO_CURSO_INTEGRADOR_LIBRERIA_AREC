@@ -1,0 +1,25 @@
+classDiagram
+  class Libro { -codigo -titulo -autor -genero -editorial -precio -stock +sumarStock() +descontarStock() +tieneStockBajo(min) }
+  class RegistroLibro { -titulo -autor -genero -editorial -fecha -stock -precio +copiarDe() }
+  class Empleado { -nombres -apellidos -dni -cargo -claveHash -registrado +esAdministrador() +mesesAntiguedad() }
+  class Venta { -numero -fecha -dni +total() }
+  class VentaLinea { -codigo -titulo -cantidad -precio +total() }
+  Venta "1" *-- "1..100" VentaLinea
+  class LibroDAO { <<interface>> }
+  class EmpleadoDAO { <<interface>> }
+  class VentaDAO { <<interface>> }
+  LibroDAO <|.. LibroDAOMemoria
+  EmpleadoDAO <|.. EmpleadoDAOMemoria
+  VentaDAO <|.. VentaDAOMemoria
+  class VentaController
+  class InventarioController
+  class UsuarioController
+  class AutenticacionController
+  VentaController --> LibroDAO
+  VentaController --> VentaDAO
+  InventarioController --> LibroDAO
+  UsuarioController --> EmpleadoDAO
+  AutenticacionController --> EmpleadoDAO
+  InventarioController ..> RegistroLibro
+  LibroDAO ..> Libro
+  EmpleadoDAO ..> Empleado

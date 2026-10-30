@@ -1,0 +1,22 @@
+sequenceDiagram
+  actor U as Usuario
+  participant P as PanelLogin (Vista)
+  participant A as AutenticacionController
+  participant D as EmpleadoDAO
+  participant H as PasswordHasher
+  U->>P: DNI + contraseña
+  P->>A: iniciarSesion(dni, clave)
+  alt cuenta bloqueada (3 fallos, 1 min)
+    A-->>P: BLOQUEADO (segundos restantes)
+  else
+    A->>D: buscarPorDni(dni)
+    D-->>A: Empleado (solo hash PBKDF2)
+    A->>H: verificar(clave, hash) tiempo constante
+    alt correcto
+      A-->>P: CORRECTO + Empleado
+      P->>P: Sesion.iniciar(empleado) → Menú
+    else incorrecto
+      A-->>P: CREDENCIALES_INVALIDAS / BLOQUEADO (3.º fallo)
+    end
+  end
+  Note over P: la clave char[] se borra de memoria tras usarse

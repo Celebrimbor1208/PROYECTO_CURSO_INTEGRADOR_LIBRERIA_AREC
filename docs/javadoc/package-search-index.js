@@ -1,0 +1,1 @@
+packageSearchIndex = [{"l":"All Packages","u":"allpackages-index.html"},{"l":"libreriaarec"},{"l":"libreriaarec.controlador"},{"l":"libreriaarec.dao"},{"l":"libreriaarec.dao.memoria"},{"l":"libreriaarec.inventario"},{"l":"libreriaarec.modelo"},{"l":"libreriaarec.usuarios"},{"l":"libreriaarec.util"},{"l":"libreriaarec.venta"}];updateSearchResults();
