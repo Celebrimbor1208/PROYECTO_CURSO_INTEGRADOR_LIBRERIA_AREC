@@ -1,19 +1,10 @@
 package libreriaarec;
 
-import libreriaarec.reabastecimiento.PanelReabastecimiento;
-import libreriaarec.reabastecimiento.PanelSeguimiento;
-import libreriaarec.reabastecimiento.Solicitud;
-import libreriaarec.venta.PanelVenta;
-import libreriaarec.inventario.PanelInventario;
-import libreriaarec.usuarios.PanelUsuarios;
-import libreriaarec.compra.PanelOrdenCompra;
-
-
-
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
 import java.awt.Dimension;
 import java.awt.Font;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
 import javax.swing.JButton;
@@ -22,14 +13,32 @@ import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
+import libreriaarec.ordencompra.PanelOrdenCompra;
+import libreriaarec.controlador.AutenticacionController;
+import libreriaarec.controlador.InventarioController;
+import libreriaarec.controlador.Sesion;
+import libreriaarec.controlador.UsuarioController;
+import libreriaarec.controlador.VentaController;
+import libreriaarec.dao.EmpleadoDAO;
+import libreriaarec.dao.LibroDAO;
+import libreriaarec.dao.VentaDAO;
+import libreriaarec.dao.memoria.DatosDemo;
+import libreriaarec.dao.memoria.EmpleadoDAOMemoria;
+import libreriaarec.dao.memoria.LibroDAOMemoria;
+import libreriaarec.dao.memoria.VentaDAOMemoria;
+import libreriaarec.modelo.Empleado;
+import libreriaarec.reabastecimiento.PanelReabastecimiento;
+import libreriaarec.reabastecimiento.PanelSeguimiento;
+import libreriaarec.reabastecimiento.Solicitud;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
- * Ventana principal. Contiene todos los paneles y cambia entre ellos con CardLayout.
- * Ejecuta esta clase (Run File) para probar el flujo completo.
+ * Ventana principal y raíz de composición: aquí se crean los DAO y los controladores
+ * y se inyectan en las vistas (inversión de dependencias). Ejecuta esta clase para probar.
  */
 public class VentanaPrincipal extends JFrame {
 
-    // Nombres de cada pantalla
     public static final String BIENVENIDA = "bienvenida";
     public static final String LOGIN = "login";
     public static final String MENU = "menu";
@@ -41,10 +50,14 @@ public class VentanaPrincipal extends JFrame {
     public static final String CRECIMIENTO = "crecimiento";
     public static final String SEGUIMIENTO = "seguimiento";
 
+    private static final Logger LOG = LoggerFactory.getLogger(VentanaPrincipal.class);
+
     private final CardLayout cartas = new CardLayout();
     private final JPanel contenedor = new JPanel(cartas);
+    private final Sesion sesion = new Sesion();
+    private final PanelLogin panelLogin;
 
-    // Solicitudes de abastecimiento (en memoria; luego se guardarán en la base de datos)
+    // Solicitudes de abastecimiento (en memoria)
     private final List<Solicitud> solicitudes = new ArrayList<>();
 
     public VentanaPrincipal() {
@@ -52,27 +65,53 @@ public class VentanaPrincipal extends JFrame {
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setPreferredSize(new Dimension(900, 600));
 
-        contenedor.add(new PanelBienvenida(this), BIENVENIDA);
-        contenedor.add(new PanelLogin(this), LOGIN);
-        contenedor.add(new PanelMenu(this), MENU);
+        // --- Capa de datos (DAO en memoria; se puede cambiar por JDBC sin tocar los controladores) ---
+        LibroDAO libros = new LibroDAOMemoria();
+        EmpleadoDAO empleados = new EmpleadoDAOMemoria();
+        VentaDAO ventas = new VentaDAOMemoria();
+        DatosDemo.cargar(libros, empleados);
 
-        // Módulos de ejemplo (reemplázalos por tus paneles reales cuando los desarrolles)
-        contenedor.add(crearPlaceholder("MÓDULO DE VENTA"), VENTA);
-        contenedor.add(crearPlaceholder("MÓDULO DE INVENTARIO Y ALERTAS"), INVENTARIO);
-        contenedor.add(crearPlaceholder("MÓDULO DE REGISTRO DE USUARIO/ADM"), USUARIOS);
-        contenedor.add(crearPlaceholder("MÓDULO DE ORDEN DE COMPRA"), COMPRA);
+        // --- Controladores ---
+        Clock reloj = Clock.systemDefaultZone();
+        AutenticacionController autenticacion = new AutenticacionController(empleados, reloj);
+        VentaController ventaCtrl = new VentaController(libros, ventas, reloj);
+        InventarioController inventarioCtrl = new InventarioController(libros);
+        UsuarioController usuarioCtrl = new UsuarioController(empleados, reloj);
+
+        // --- Vistas ---
+        panelLogin = new PanelLogin(this, autenticacion);
+        contenedor.add(new PanelBienvenida(this), BIENVENIDA);
+        contenedor.add(panelLogin, LOGIN);
+        contenedor.add(new PanelMenu(this), MENU);
+        contenedor.add(new libreriaarec.venta.PanelVenta(this, ventaCtrl), VENTA);
+        contenedor.add(new libreriaarec.inventario.PanelInventario(this, inventarioCtrl), INVENTARIO);
+        contenedor.add(new libreriaarec.usuarios.PanelUsuarios(this, usuarioCtrl), USUARIOS);
+        contenedor.add(new PanelOrdenCompra(this), COMPRA);
         contenedor.add(new PanelReabastecimiento(this), REABASTECIMIENTO);
         contenedor.add(new PanelSeguimiento(this), SEGUIMIENTO);
-        contenedor.add(new PanelVenta(this), VENTA);
-        contenedor.add(new PanelInventario(this), INVENTARIO);
-        contenedor.add(new PanelUsuarios(this), USUARIOS);
-        contenedor.add(new PanelOrdenCompra(this), COMPRA);
         contenedor.add(crearPlaceholder("MÓDULO DE CRECIMIENTO"), CRECIMIENTO);
 
         add(contenedor);
         pack();
         setLocationRelativeTo(null);
         mostrar(BIENVENIDA);
+        LOG.info("Sistema Librerías AREC iniciado");
+    }
+
+    public Sesion getSesion() {
+        return sesion;
+    }
+
+    /** Llamado por el login cuando las credenciales son correctas. */
+    public void iniciarSesion(Empleado empleado) {
+        sesion.iniciar(empleado);
+        mostrar(MENU);
+    }
+
+    public void cerrarSesion() {
+        sesion.cerrar();
+        panelLogin.limpiar();
+        mostrar(LOGIN);
     }
 
     public List<Solicitud> getSolicitudes() {
