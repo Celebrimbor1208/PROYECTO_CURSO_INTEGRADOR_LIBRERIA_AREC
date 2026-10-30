@@ -12,10 +12,7 @@ import java.awt.event.FocusAdapter;
 import java.awt.event.FocusEvent;
 import java.awt.print.PrinterException;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Locale;
+import java.util.Optional;
 import javax.swing.BorderFactory;
 import javax.swing.ImageIcon;
 import javax.swing.JButton;
@@ -36,20 +33,22 @@ import javax.swing.text.DocumentFilter;
 import libreriaarec.Iconos;
 import libreriaarec.PanelConFondo;
 import libreriaarec.VentanaPrincipal;
+import libreriaarec.controlador.ValidacionException;
+import libreriaarec.controlador.VentaController;
+import libreriaarec.modelo.Libro;
+import libreriaarec.modelo.Venta;
+import libreriaarec.util.Texto;
 
 /**
- * Módulo de Venta.
+ * Vista del módulo de Venta.
+ * Solo muestra la pantalla y pasa las acciones al {@link VentaController}, que contiene la lógica.
  * Flujo: DNI -> código (autocompleta título y precio) -> cantidad -> AGREGAR (tabla, hasta 100)
  *        -> icono de boleta (vista previa) -> GENERAR COMPROBANTE (emite y descuenta stock).
  */
 public class PanelVenta extends PanelConFondo {
 
-    private static final int MAX_LINEAS = 100;
-    private static final DateTimeFormatter FECHA_HORA = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm");
-    private static final String SEPARADOR = "------------------------------------";
-
     private final VentanaPrincipal ventana;
-    private final List<Venta.Linea> lineas = new ArrayList<>();
+    private final VentaController controlador;
 
     private final JTextField txtDni = new JTextField();
     private final JTextField txtCodigo = new JTextField();
@@ -68,12 +67,13 @@ public class PanelVenta extends PanelConFondo {
     };
     private final JTable tabla = new JTable(modelo);
 
-    private boolean autoRelleno = false;    // título y precio vinieron del catálogo
+    private boolean autoRelleno = false;    // título y precio vinieron del inventario
     private boolean previsualizada = false; // la boleta mostrada corresponde a la tabla actual
 
-    public PanelVenta(VentanaPrincipal ventana) {
+    public PanelVenta(VentanaPrincipal ventana, VentaController controlador) {
         super("/libreriaarec/imagenes/fondo2.jpg");
         this.ventana = ventana;
+        this.controlador = controlador;
         setLayout(new BorderLayout(15, 15));
         setBorder(BorderFactory.createEmptyBorder(15, 20, 15, 20));
 
@@ -254,22 +254,22 @@ public class PanelVenta extends PanelConFondo {
     }
 
     // ------------------------------------------------------------------
-    // Acciones
+    // Acciones (cada una delega la lógica en el controlador)
     // ------------------------------------------------------------------
 
-    /** Busca el código en el catálogo y rellena título y precio. Devuelve true si lo encontró. */
+    /** Busca el código en el inventario y rellena título y precio. Devuelve true si lo encontró. */
     private boolean buscarLibro() {
         String codigo = txtCodigo.getText().trim();
         if (codigo.isEmpty()) {
             lblEstado.setText(" ");
             return false;
         }
-        Catalogo.Libro libro = Catalogo.buscar(codigo);
-        if (libro != null) {
-            txtTitulo.setText(libro.titulo);
-            txtPrecio.setText(monto(libro.precio));
+        Optional<Libro> libro = controlador.consultarLibro(codigo);
+        if (libro.isPresent()) {
+            txtTitulo.setText(libro.get().getTitulo());
+            txtPrecio.setText(Texto.monto(libro.get().getPrecio()));
             autoRelleno = true;
-            lblEstado.setText("Libro encontrado. Stock disponible: " + libro.stock);
+            lblEstado.setText("Libro encontrado. Stock disponible: " + libro.get().getStock());
             return true;
         }
         if (autoRelleno) { // quedaron datos de otro código: se limpian
@@ -282,63 +282,13 @@ public class PanelVenta extends PanelConFondo {
     }
 
     private void agregar() {
-        String codigo = txtCodigo.getText().trim().toUpperCase();
-        String titulo = txtTitulo.getText().trim();
-
-        if (codigo.isEmpty()) {
-            aviso("Ingresa el código del libro.");
-            txtCodigo.requestFocusInWindow();
-            return;
-        }
-        if (titulo.isEmpty()) {
-            aviso("Escribe el título del libro.");
-            txtTitulo.requestFocusInWindow();
-            return;
-        }
-        double precio;
         try {
-            precio = leerMonto(txtPrecio.getText());
-            if (precio <= 0) throw new NumberFormatException();
-        } catch (NumberFormatException ex) {
-            aviso("El precio no es válido.");
-            txtPrecio.requestFocusInWindow();
+            controlador.agregarLinea(txtCodigo.getText(), txtTitulo.getText(),
+                    txtPrecio.getText(), txtCantidad.getText());
+        } catch (ValidacionException ex) {
+            avisar(ex);
             return;
         }
-        int cantidad;
-        try {
-            cantidad = Integer.parseInt(txtCantidad.getText().trim());
-            if (cantidad <= 0) throw new NumberFormatException();
-        } catch (NumberFormatException ex) {
-            aviso("Ingresa una cantidad válida (mayor que 0).");
-            txtCantidad.requestFocusInWindow();
-            return;
-        }
-
-        // Control de stock (solo para libros del catálogo)
-        Catalogo.Libro libro = Catalogo.buscar(codigo);
-        if (libro != null && cantidadEnTabla(codigo) + cantidad > libro.stock) {
-            aviso("Stock insuficiente. Quedan " + libro.stock + " unidad(es) de \"" + libro.titulo + "\".");
-            return;
-        }
-
-        // Si ya está el mismo libro con el mismo precio, se suma la cantidad
-        Venta.Linea existente = null;
-        for (Venta.Linea l : lineas) {
-            if (l.codigo.equals(codigo) && l.precio == precio) {
-                existente = l;
-                break;
-            }
-        }
-        if (existente != null) {
-            existente.cantidad += cantidad;
-        } else {
-            if (lineas.size() >= MAX_LINEAS) {
-                aviso("Se alcanzó el máximo de " + MAX_LINEAS + " productos por boleta.");
-                return;
-            }
-            lineas.add(new Venta.Linea(codigo, titulo, cantidad, precio));
-        }
-
         refrescarTabla();
         invalidarBoleta();
         limpiarCamposProducto();
@@ -352,16 +302,21 @@ public class PanelVenta extends PanelConFondo {
             limpiarCamposProducto();
             return;
         }
-        lineas.remove(fila);
+        controlador.quitarLinea(fila);
         refrescarTabla();
         invalidarBoleta();
     }
 
     /** Icono de la hoja roja: muestra en el cuadro BOLETA los datos registrados. */
     private boolean verBoleta() {
-        if (!validarVenta()) return false;
-        txtBoleta.setText(construirBoleta("(se asigna al emitir)", LocalDateTime.now(),
-                txtDni.getText().trim(), lineas, true));
+        try {
+            controlador.validarVenta(txtDni.getText());
+        } catch (ValidacionException ex) {
+            avisar(ex);
+            return false;
+        }
+        txtBoleta.setText(BoletaTexto.construir("(se asigna al emitir)", LocalDateTime.now(),
+                txtDni.getText().trim(), controlador.lineas(), true));
         txtBoleta.setCaretPosition(0);
         previsualizada = true;
         return true;
@@ -376,24 +331,22 @@ public class PanelVenta extends PanelConFondo {
             }
             return;
         }
-        if (!validarVenta()) return;
-
         int r = JOptionPane.showConfirmDialog(this,
-                "¿Emitir la boleta por S/ " + monto(totalActual()) + "?",
+                "¿Emitir la boleta por S/ " + Texto.monto(controlador.total()) + "?",
                 "Confirmar venta", JOptionPane.YES_NO_OPTION);
         if (r != JOptionPane.YES_OPTION) return;
 
-        Venta venta = new Venta(txtDni.getText().trim(), lineas);
-        for (Venta.Linea l : venta.lineas) {
-            Catalogo.Libro libro = Catalogo.buscar(l.codigo);
-            if (libro != null) libro.stock -= l.cantidad;
+        Venta venta;
+        try {
+            venta = controlador.emitir(txtDni.getText());
+        } catch (ValidacionException ex) {
+            avisar(ex);
+            return;
         }
-        Venta.HISTORIAL.add(venta);
-
-        String texto = construirBoleta(venta.numero, venta.fecha, venta.dni, venta.lineas, false);
+        String texto = BoletaTexto.construir(venta.getNumero(), venta.getFecha(), venta.getDni(),
+                venta.getLineas(), false);
 
         // Deja el formulario limpio para la siguiente venta; la boleta emitida queda a la vista
-        lineas.clear();
         refrescarTabla();
         limpiarCamposProducto();
         txtDni.setText("");
@@ -402,7 +355,7 @@ public class PanelVenta extends PanelConFondo {
         previsualizada = false;
 
         int imprimir = JOptionPane.showConfirmDialog(this,
-                "Boleta " + venta.numero + " emitida correctamente.\n¿Deseas imprimirla?",
+                "Boleta " + venta.getNumero() + " emitida correctamente.\n¿Deseas imprimirla?",
                 "Venta registrada", JOptionPane.YES_NO_OPTION, JOptionPane.INFORMATION_MESSAGE);
         if (imprimir == JOptionPane.YES_OPTION) {
             try {
@@ -415,13 +368,13 @@ public class PanelVenta extends PanelConFondo {
     }
 
     private void salir() {
-        if (!lineas.isEmpty()) {
+        if (controlador.hayVentaPendiente()) {
             int r = JOptionPane.showConfirmDialog(this,
                     "Hay una venta sin emitir. ¿Salir y descartarla?",
                     "Venta pendiente", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
             if (r != JOptionPane.YES_OPTION) return;
         }
-        lineas.clear();
+        controlador.cancelar();
         refrescarTabla();
         limpiarCamposProducto();
         txtDni.setText("");
@@ -430,43 +383,18 @@ public class PanelVenta extends PanelConFondo {
     }
 
     // ------------------------------------------------------------------
-    // Utilidades
+    // Utilidades de la vista
     // ------------------------------------------------------------------
-
-    private boolean validarVenta() {
-        if (!txtDni.getText().trim().matches("\\d{8}")) {
-            aviso("Ingresa el DNI del cliente (8 dígitos).");
-            txtDni.requestFocusInWindow();
-            return false;
-        }
-        if (lineas.isEmpty()) {
-            aviso("Agrega al menos un producto a la tabla.");
-            return false;
-        }
-        return true;
-    }
-
-    private int cantidadEnTabla(String codigo) {
-        int t = 0;
-        for (Venta.Linea l : lineas) {
-            if (l.codigo.equals(codigo)) t += l.cantidad;
-        }
-        return t;
-    }
-
-    private double totalActual() {
-        double t = 0;
-        for (Venta.Linea l : lineas) t += l.total();
-        return t;
-    }
 
     private void refrescarTabla() {
         modelo.setRowCount(0);
         int nro = 1;
-        for (Venta.Linea l : lineas) {
-            modelo.addRow(new Object[]{nro++, l.codigo, l.titulo, l.cantidad, monto(l.precio), monto(l.total())});
+        for (Venta.Linea l : controlador.lineas()) {
+            modelo.addRow(new Object[]{nro++, l.getCodigo(), l.getTitulo(), l.getCantidad(),
+                Texto.monto(l.getPrecio()), Texto.monto(l.total())});
         }
-        lblTotal.setText("  TOTAL: S/ " + monto(totalActual()) + "     (" + lineas.size() + " / " + MAX_LINEAS + " productos)");
+        lblTotal.setText("  TOTAL: S/ " + Texto.monto(controlador.total()) + "     ("
+                + controlador.lineas().size() + " / " + VentaController.MAX_LINEAS + " productos)");
     }
 
     private void limpiarCamposProducto() {
@@ -484,47 +412,15 @@ public class PanelVenta extends PanelConFondo {
         txtBoleta.setText("");
     }
 
-    private String construirBoleta(String numero, LocalDateTime fecha, String dni,
-                                   List<Venta.Linea> lista, boolean preliminar) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("        LIBRERÍAS AREC\n");
-        sb.append("        BOLETA DE VENTA\n");
-        if (preliminar) sb.append("      *** VISTA PREVIA ***\n");
-        sb.append(SEPARADOR).append("\n");
-        sb.append("N°:    ").append(numero).append("\n");
-        sb.append("Fecha: ").append(fecha.format(FECHA_HORA)).append("\n");
-        sb.append("DNI:   ").append(dni).append("\n");
-        sb.append(SEPARADOR).append("\n");
-
-        double total = 0;
-        int n = 1;
-        for (Venta.Linea l : lista) {
-            sb.append(n++).append(". ").append(recortar(l.titulo, 30)).append("\n");
-            sb.append("   [").append(l.codigo).append("] ")
-              .append(l.cantidad).append(" x ").append(monto(l.precio))
-              .append(" = ").append(monto(l.total())).append("\n");
-            total += l.total();
-        }
-        sb.append(SEPARADOR).append("\n");
-        sb.append("TOTAL A PAGAR: S/ ").append(monto(total)).append("\n\n");
-        sb.append("     ¡Gracias por su compra!\n");
-        return sb.toString();
-    }
-
-    private static String recortar(String texto, int max) {
-        return texto.length() <= max ? texto : texto.substring(0, max - 3) + "...";
-    }
-
-    private static String monto(double valor) {
-        return String.format(Locale.US, "%.2f", valor);
-    }
-
-    private static double leerMonto(String texto) {
-        return Double.parseDouble(texto.trim().replace(',', '.'));
-    }
-
-    private void aviso(String mensaje) {
-        JOptionPane.showMessageDialog(this, mensaje, "Aviso", JOptionPane.WARNING_MESSAGE);
+    /** Muestra el mensaje de validación y lleva el cursor a la casilla con el error. */
+    private void avisar(ValidacionException ex) {
+        JOptionPane.showMessageDialog(this, ex.getMessage(), "Aviso", JOptionPane.WARNING_MESSAGE);
+        String campo = ex.getCampo();
+        if ("dni".equals(campo)) txtDni.requestFocusInWindow();
+        else if ("codigo".equals(campo)) txtCodigo.requestFocusInWindow();
+        else if ("titulo".equals(campo)) txtTitulo.requestFocusInWindow();
+        else if ("precio".equals(campo)) txtPrecio.requestFocusInWindow();
+        else if ("cantidad".equals(campo)) txtCantidad.requestFocusInWindow();
     }
 
     /** Limita un campo a solo dígitos y una longitud máxima. */

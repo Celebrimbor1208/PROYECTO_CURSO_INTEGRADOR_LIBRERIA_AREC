@@ -11,8 +11,6 @@ import java.awt.GridBagLayout;
 import java.awt.Insets;
 import java.awt.event.ComponentAdapter;
 import java.awt.event.ComponentEvent;
-import java.text.Collator;
-import java.text.Normalizer;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -44,51 +42,25 @@ import javax.swing.text.BadLocationException;
 import javax.swing.text.DocumentFilter;
 import libreriaarec.PanelConFondo;
 import libreriaarec.VentanaPrincipal;
-import libreriaarec.venta.Catalogo;
+import libreriaarec.controlador.InventarioController;
+import libreriaarec.controlador.InventarioController.Criterio;
+import libreriaarec.controlador.InventarioController.ResultadoRegistro;
+import libreriaarec.controlador.ValidacionException;
+import libreriaarec.modelo.Libro;
+import libreriaarec.modelo.RegistroLibro;
+import libreriaarec.util.Texto;
 
 /**
- * Módulo de Inventario y Alertas.
- * 1) Se llenan los datos del libro y se pasan a la tabla (queda en orden alfabético).
- * 2) En la tabla se puede buscar, filtrar, corregir (actualizar) o quitar libros.
- * 3) El botón REGISTRAR guarda todo en el inventario (Catalogo) y asigna los códigos.
+ * Vista del módulo de Inventario y Alertas.
+ * La lógica (tabla ordenada, buscador, filtro, registro y alertas) está en {@link InventarioController}.
  */
 public class PanelInventario extends PanelConFondo {
 
     private static final DateTimeFormatter FMT = DateTimeFormatter.ofPattern("dd/MM/yyyy");
-    private static final Collator COLLATOR = crearCollator();
-
-    /** Libro que aún no se ha guardado en el inventario. */
-    private static class Registro {
-        String titulo, autor, genero, editorial;
-        LocalDate fecha;
-        int stock;
-        double precio;
-
-        Registro(String titulo, String autor, String genero, String editorial,
-                 LocalDate fecha, int stock, double precio) {
-            this.titulo = titulo;
-            this.autor = autor;
-            this.genero = genero;
-            this.editorial = editorial;
-            this.fecha = fecha;
-            this.stock = stock;
-            this.precio = precio;
-        }
-
-        void copiarDe(Registro o) {
-            titulo = o.titulo;
-            autor = o.autor;
-            genero = o.genero;
-            editorial = o.editorial;
-            fecha = o.fecha;
-            stock = o.stock;
-            precio = o.precio;
-        }
-    }
 
     private final VentanaPrincipal ventana;
-    private final List<Registro> registros = new ArrayList<>(); // todos los pendientes
-    private final List<Registro> vista = new ArrayList<>();     // los que se ven (según buscador/filtro)
+    private final InventarioController controlador;
+    private final List<RegistroLibro> vista = new ArrayList<>(); // lo que se ve (según buscador/filtro)
 
     // Formulario
     private final JTextField txtTitulo = new JTextField();
@@ -117,9 +89,10 @@ public class PanelInventario extends PanelConFondo {
     private final JLabel lblResumen = new JLabel(" ");
     private final JButton btnAlertas = new JButton();
 
-    public PanelInventario(VentanaPrincipal ventana) {
+    public PanelInventario(VentanaPrincipal ventana, InventarioController controlador) {
         super("/libreriaarec/imagenes/fondo2.jpg");
         this.ventana = ventana;
+        this.controlador = controlador;
         setLayout(new BorderLayout(10, 10));
         setBorder(BorderFactory.createEmptyBorder(12, 20, 12, 20));
 
@@ -306,42 +279,33 @@ public class PanelInventario extends PanelConFondo {
     }
 
     // ------------------------------------------------------------------
-    // Acciones sobre la tabla (libros pendientes de registrar)
+    // Acciones (delegan la lógica en el controlador)
     // ------------------------------------------------------------------
 
     /** REGISTRAR EN TABLA: pasa los datos del formulario a la tabla, en orden alfabético. */
     private void registrarEnTabla() {
-        Registro nuevo = leerFormulario();
-        if (nuevo == null) return;
-        if (existeDuplicado(nuevo, null)) {
-            aviso("Ese libro (mismo título y autor) ya está en la tabla.\n"
-                    + "Selecciónalo en la tabla y usa ACTUALIZAR TABLA para cambiar su stock o precio.");
+        try {
+            controlador.agregarPendiente(leerFormulario());
+        } catch (ValidacionException ex) {
+            avisar(ex);
             return;
         }
-        registros.add(nuevo);
-        ordenar();
         limpiarFormulario();
         tabla.clearSelection();
         refrescar();
         txtTitulo.requestFocusInWindow();
     }
 
-    /** ACTUALIZAR TABLA: aplica los cambios del formulario al libro seleccionado (stock, precio, nombre...). */
+    /** ACTUALIZAR TABLA: aplica los cambios del formulario al libro seleccionado. */
     private void actualizarTabla() {
-        int fila = tabla.getSelectedRow();
-        if (fila < 0 || fila >= vista.size()) {
-            aviso("Selecciona en la tabla el libro que quieres actualizar.");
+        RegistroLibro destino = seleccionado();
+        if (destino == null) return;
+        try {
+            controlador.actualizarPendiente(destino, leerFormulario());
+        } catch (ValidacionException ex) {
+            avisar(ex);
             return;
         }
-        Registro editado = leerFormulario();
-        if (editado == null) return;
-        Registro destino = vista.get(fila);
-        if (existeDuplicado(editado, destino)) {
-            aviso("Ya existe otro libro con ese título y autor en la tabla.");
-            return;
-        }
-        destino.copiarDe(editado);
-        ordenar();
         limpiarFormulario();
         tabla.clearSelection();
         refrescar();
@@ -349,12 +313,9 @@ public class PanelInventario extends PanelConFondo {
     }
 
     private void quitarDeTabla() {
-        int fila = tabla.getSelectedRow();
-        if (fila < 0 || fila >= vista.size()) {
-            aviso("Selecciona en la tabla el libro que quieres quitar.");
-            return;
-        }
-        registros.remove(vista.get(fila));
+        RegistroLibro r = seleccionado();
+        if (r == null) return;
+        controlador.quitarPendiente(r);
         limpiarFormulario();
         tabla.clearSelection();
         refrescar();
@@ -369,44 +330,36 @@ public class PanelInventario extends PanelConFondo {
 
     /** REGISTRAR: guarda los libros de la tabla en el inventario real. */
     private void registrarEnInventario() {
-        if (registros.isEmpty()) {
+        if (controlador.cantidadPendientes() == 0) {
             aviso("No hay libros en la tabla para registrar.");
             return;
         }
         int r = JOptionPane.showConfirmDialog(this,
-                "¿Registrar " + registros.size() + " libro(s) en el inventario?",
+                "¿Registrar " + controlador.cantidadPendientes() + " libro(s) en el inventario?",
                 "Confirmar registro", JOptionPane.YES_NO_OPTION);
         if (r != JOptionPane.YES_OPTION) return;
 
-        StringBuilder resumen = new StringBuilder();
-        int nuevos = 0;
-        int actualizados = 0;
-        for (Registro reg : registros) {
-            Catalogo.Libro existente = Catalogo.buscarPorTitulo(reg.titulo, reg.autor);
-            if (existente != null) {
-                // El libro ya estaba en el inventario: se suma el stock y se actualiza el precio
-                existente.stock += reg.stock;
-                existente.precio = reg.precio;
-                actualizados++;
-                resumen.append(String.format("%-6s %s  (ya existía; stock total: %d)\n",
-                        existente.codigo, reg.titulo, existente.stock));
-            } else {
-                Catalogo.Libro nuevo = Catalogo.registrar(reg.titulo, reg.autor, reg.genero,
-                        reg.editorial, reg.fecha, reg.precio, reg.stock);
-                nuevos++;
-                resumen.append(String.format("%-6s %s  (nuevo; stock: %d)\n",
-                        nuevo.codigo, reg.titulo, nuevo.stock));
-            }
+        ResultadoRegistro resultado;
+        try {
+            resultado = controlador.registrarPendientes();
+        } catch (ValidacionException ex) {
+            avisar(ex);
+            return;
         }
 
-        registros.clear();
         limpiarFormulario();
         tabla.clearSelection();
         refrescar();
         actualizarAlertas();
 
-        JTextArea area = new JTextArea("Libros nuevos: " + nuevos + "   |   Ya existentes (stock sumado): "
-                + actualizados + "\n\nCódigos para usar en el módulo de Venta:\n\n" + resumen);
+        StringBuilder resumen = new StringBuilder();
+        for (ResultadoRegistro.Item i : resultado.getItems()) {
+            resumen.append(String.format("%-6s %s  (%s; stock%s: %d)\n", i.getCodigo(), i.getTitulo(),
+                    i.isNuevo() ? "nuevo" : "ya existía", i.isNuevo() ? "" : " total", i.getStockFinal()));
+        }
+        JTextArea area = new JTextArea("Libros nuevos: " + resultado.cantidadNuevos()
+                + "   |   Ya existentes (stock sumado): " + resultado.cantidadExistentes()
+                + "\n\nCódigos para usar en el módulo de Venta:\n\n" + resumen);
         area.setEditable(false);
         area.setFont(new Font("Monospaced", Font.PLAIN, 12));
         JScrollPane sp = new JScrollPane(area);
@@ -415,13 +368,13 @@ public class PanelInventario extends PanelConFondo {
     }
 
     private void salir() {
-        if (!registros.isEmpty()) {
+        if (controlador.cantidadPendientes() > 0) {
             int r = JOptionPane.showConfirmDialog(this,
-                    "Hay " + registros.size() + " libro(s) en la tabla sin registrar. ¿Salir y descartarlos?",
+                    "Hay " + controlador.cantidadPendientes() + " libro(s) en la tabla sin registrar. ¿Salir y descartarlos?",
                     "Registros pendientes", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
             if (r != JOptionPane.YES_OPTION) return;
         }
-        registros.clear();
+        for (RegistroLibro reg : controlador.pendientes()) controlador.quitarPendiente(reg);
         limpiarFormulario();
         txtBuscador.setText("");
         txtFiltro.setText("");
@@ -434,22 +387,22 @@ public class PanelInventario extends PanelConFondo {
     // ------------------------------------------------------------------
 
     private void actualizarAlertas() {
-        int n = Catalogo.stockBajo(Catalogo.STOCK_MINIMO).size();
+        int n = controlador.alertasStockBajo().size();
         btnAlertas.setText("ALERTAS DE STOCK (" + n + ")");
         btnAlertas.setBackground(n > 0 ? new Color(255, 190, 190) : new Color(220, 220, 220));
     }
 
     private void verAlertas() {
-        List<Catalogo.Libro> bajos = Catalogo.stockBajo(Catalogo.STOCK_MINIMO);
+        List<Libro> bajos = controlador.alertasStockBajo();
         if (bajos.isEmpty()) {
             JOptionPane.showMessageDialog(this, "No hay libros con stock bajo.",
                     "Alertas de stock", JOptionPane.INFORMATION_MESSAGE);
             return;
         }
         StringBuilder sb = new StringBuilder();
-        for (Catalogo.Libro l : bajos) {
-            String t = l.titulo.length() > 36 ? l.titulo.substring(0, 33) + "..." : l.titulo;
-            sb.append(String.format("%-6s %-36s stock: %d\n", l.codigo, t, l.stock));
+        for (Libro l : bajos) {
+            String t = l.getTitulo().length() > 36 ? l.getTitulo().substring(0, 33) + "..." : l.getTitulo();
+            sb.append(String.format("%-6s %-36s stock: %d\n", l.getCodigo(), t, l.getStock()));
         }
         JTextArea area = new JTextArea(sb.toString());
         area.setEditable(false);
@@ -457,56 +410,29 @@ public class PanelInventario extends PanelConFondo {
         JScrollPane sp = new JScrollPane(area);
         sp.setPreferredSize(new Dimension(520, 200));
         JOptionPane.showMessageDialog(this, sp,
-                "Stock bajo (" + Catalogo.STOCK_MINIMO + " unidades o menos) - conviene reabastecer",
+                "Stock bajo (" + InventarioController.STOCK_MINIMO + " unidades o menos) - conviene reabastecer",
                 JOptionPane.WARNING_MESSAGE);
     }
 
     // ------------------------------------------------------------------
-    // Formulario
+    // Formulario y tabla
     // ------------------------------------------------------------------
 
-    /** Lee y valida el formulario. Devuelve null (y avisa) si falta algo. */
-    private Registro leerFormulario() {
-        String titulo = txtTitulo.getText().trim();
-        String autor = txtAutor.getText().trim();
-        String genero = String.valueOf(cmbGenero.getSelectedItem()).trim();
-        String editorial = String.valueOf(cmbEditorial.getSelectedItem()).trim();
-
-        if (titulo.isEmpty()) { aviso("Escribe el nombre del libro."); txtTitulo.requestFocusInWindow(); return null; }
-        if (autor.isEmpty()) { aviso("Escribe el nombre del autor."); txtAutor.requestFocusInWindow(); return null; }
-        if (genero.isEmpty() || genero.equals("null")) { aviso("Indica el género del libro."); return null; }
-        if (editorial.isEmpty() || editorial.equals("null")) { aviso("Indica la editorial que provee el libro."); return null; }
-
-        int stock;
-        try {
-            stock = Integer.parseInt(txtStock.getText().trim());
-            if (stock <= 0) throw new NumberFormatException();
-        } catch (NumberFormatException ex) {
-            aviso("Ingresa un stock válido (mayor que 0).");
-            txtStock.requestFocusInWindow();
-            return null;
-        }
-        double precio;
-        try {
-            precio = Double.parseDouble(txtPrecio.getText().trim().replace(',', '.'));
-            if (precio <= 0) throw new NumberFormatException();
-        } catch (NumberFormatException ex) {
-            aviso("Ingresa un precio válido (mayor que 0).");
-            txtPrecio.requestFocusInWindow();
-            return null;
-        }
+    private RegistroLibro leerFormulario() throws ValidacionException {
         LocalDate fecha = ((Date) spFecha.getValue()).toInstant().atZone(ZoneId.systemDefault()).toLocalDate();
-        return new Registro(titulo, autor, genero, editorial, fecha, stock, precio);
+        return controlador.crearRegistro(txtTitulo.getText(), txtAutor.getText(),
+                String.valueOf(cmbGenero.getSelectedItem()), String.valueOf(cmbEditorial.getSelectedItem()),
+                fecha, txtStock.getText(), txtPrecio.getText());
     }
 
-    private void cargarFormulario(Registro r) {
-        txtTitulo.setText(r.titulo);
-        txtAutor.setText(r.autor);
-        cmbGenero.setSelectedItem(r.genero);
-        cmbEditorial.setSelectedItem(r.editorial);
-        spFecha.setValue(Date.from(r.fecha.atStartOfDay(ZoneId.systemDefault()).toInstant()));
-        txtStock.setText(String.valueOf(r.stock));
-        txtPrecio.setText(String.format(Locale.US, "%.2f", r.precio));
+    private void cargarFormulario(RegistroLibro r) {
+        txtTitulo.setText(r.getTitulo());
+        txtAutor.setText(r.getAutor());
+        cmbGenero.setSelectedItem(r.getGenero());
+        cmbEditorial.setSelectedItem(r.getEditorial());
+        spFecha.setValue(Date.from(r.getFecha().atStartOfDay(ZoneId.systemDefault()).toInstant()));
+        txtStock.setText(String.valueOf(r.getStock()));
+        txtPrecio.setText(Texto.monto(r.getPrecio()));
     }
 
     private void limpiarFormulario() {
@@ -519,57 +445,38 @@ public class PanelInventario extends PanelConFondo {
         spFecha.setValue(new Date());
     }
 
-    // ------------------------------------------------------------------
-    // Tabla: orden, filtros y utilidades
-    // ------------------------------------------------------------------
-
-    private void ordenar() {
-        registros.sort((a, b) -> COLLATOR.compare(a.titulo, b.titulo));
-    }
-
-    private boolean existeDuplicado(Registro candidato, Registro ignorar) {
-        for (Registro r : registros) {
-            if (r == ignorar) continue;
-            if (norm(r.titulo).equals(norm(candidato.titulo)) && norm(r.autor).equals(norm(candidato.autor))) {
-                return true;
-            }
+    private RegistroLibro seleccionado() {
+        int fila = tabla.getSelectedRow();
+        if (fila < 0 || fila >= vista.size()) {
+            aviso("Selecciona en la tabla el libro que quieres actualizar o quitar.");
+            return null;
         }
-        return false;
+        return vista.get(fila);
     }
 
-    /** Redibuja la tabla aplicando el buscador (título) y el filtrador (género/autor/editorial). */
+    /** Redibuja la tabla con el resultado del buscador (título) y el filtrador del controlador. */
     private void refrescar() {
-        String q = norm(txtBuscador.getText());
-        String f = norm(txtFiltro.getText());
-        int criterio = cmbCriterio.getSelectedIndex();
-
+        Criterio criterio = cmbCriterio.getSelectedIndex() == 0 ? Criterio.GENERO
+                : cmbCriterio.getSelectedIndex() == 1 ? Criterio.AUTOR : Criterio.EDITORIAL;
         vista.clear();
+        vista.addAll(controlador.buscar(txtBuscador.getText(), criterio, txtFiltro.getText()));
         modelo.setRowCount(0);
         int n = 1;
-        for (Registro r : registros) {
-            if (!q.isEmpty() && !norm(r.titulo).contains(q)) continue;
-            if (!f.isEmpty()) {
-                String campo = criterio == 0 ? r.genero : (criterio == 1 ? r.autor : r.editorial);
-                if (!norm(campo).contains(f)) continue;
-            }
-            vista.add(r);
-            modelo.addRow(new Object[]{n++, r.titulo, r.autor, r.genero, r.editorial,
-                r.fecha.format(FMT), r.stock, String.format(Locale.US, "%.2f", r.precio)});
+        for (RegistroLibro r : vista) {
+            modelo.addRow(new Object[]{n++, r.getTitulo(), r.getAutor(), r.getGenero(), r.getEditorial(),
+                r.getFecha().format(FMT), r.getStock(), Texto.monto(r.getPrecio())});
         }
         lblResumen.setText("  Libros por registrar (aún no guardados en el inventario): mostrando "
-                + vista.size() + " de " + registros.size());
+                + vista.size() + " de " + controlador.cantidadPendientes());
     }
 
-    /** Minúsculas y sin tildes, para que "habitacion" encuentre "Habitación". */
-    private static String norm(String s) {
-        String n = Normalizer.normalize(s == null ? "" : s, Normalizer.Form.NFD);
-        return n.replaceAll("\\p{M}", "").toLowerCase(Locale.ROOT).trim();
-    }
-
-    private static Collator crearCollator() {
-        Collator c = Collator.getInstance(Locale.forLanguageTag("es-PE"));
-        c.setStrength(Collator.PRIMARY); // ignora mayúsculas y tildes al ordenar
-        return c;
+    private void avisar(ValidacionException ex) {
+        aviso(ex.getMessage());
+        String campo = ex.getCampo();
+        if ("titulo".equals(campo)) txtTitulo.requestFocusInWindow();
+        else if ("autor".equals(campo)) txtAutor.requestFocusInWindow();
+        else if ("stock".equals(campo)) txtStock.requestFocusInWindow();
+        else if ("precio".equals(campo)) txtPrecio.requestFocusInWindow();
     }
 
     private void aviso(String mensaje) {
