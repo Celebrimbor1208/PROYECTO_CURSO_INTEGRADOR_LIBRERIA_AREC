@@ -1,4 +1,4 @@
-package libreriaarec.compra;
+package libreriaarec.ordencompra;
 
 /**
  * Datos de Librerías AREC que se imprimen en la orden de compra (PDF).

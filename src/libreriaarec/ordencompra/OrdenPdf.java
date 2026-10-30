@@ -1,4 +1,4 @@
-package libreriaarec.compra;
+package libreriaarec.ordencompra;
 
 import java.awt.image.BufferedImage;
 import java.io.File;

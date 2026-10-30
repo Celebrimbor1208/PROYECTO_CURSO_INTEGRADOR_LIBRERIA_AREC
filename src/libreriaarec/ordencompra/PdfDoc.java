@@ -1,4 +1,4 @@
-package libreriaarec.compra;
+package libreriaarec.ordencompra;
 
 import java.awt.Color;
 import java.awt.Graphics2D;
